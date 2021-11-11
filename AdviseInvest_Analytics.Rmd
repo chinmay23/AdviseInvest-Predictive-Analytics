@@ -1,0 +1,272 @@
+---
+title: "AdviseInvest_Analytics"
+author: "Chinmay"
+date: "11/10/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(rpart)
+library(rpart.plot)
+```
+
+Read the csv file and put it into 'advise_invest'
+
+Remove rows with NAs. 
+
+Remove the row with the single outlier in num_accts.
+Remove the rows with negative income values.
+
+```{r}
+advise_invest <- read_csv("adviseinvest.csv") 
+
+advise_invest_cl<- advise_invest %>% filter(num_accts<5) %>% filter(income>0) %>% na.omit()
+
+summary(advise_invest_cl)
+```
+
+Converting the 4 variables identified into factors. 
+
+Since the categories are unordered,  turned these variables into nominal factors.  This is easily accomplished with factor(): variable <- factor(variable).  The levels will be assigned automatically.
+
+```{r}
+product <- factor(advise_invest_cl$product,ordered=TRUE)
+job <- factor(advise_invest_cl$job,ordered=TRUE)
+
+sav_acct <- factor(advise_invest_cl$sav_acct,ordered=TRUE)
+
+chk_acct <- factor(advise_invest_cl$chk_acct,ordered=TRUE)
+
+mean(advise_invest_cl$answered)
+```
+
+
+
+Plot "answered" against "num_accts"
+
+```{r}
+answered_m <- ifelse(advise_invest_cl$answered==0,"No","Yes")
+
+answered_mf <- factor(answered_m)
+ggplot(advise_invest_cl,aes(x=answered_mf,y=num_accts)) + geom_boxplot() + labs(title = "Answered(Yes or No) ~ No. of accounts")
+```
+
+The median number of accounts for both the boxplots, for customers who answered and did not answer is 2(two). Therefore it is better to target customers who have more than 2(two) accounts that is 3 or 4 accounts. These set of customers will have a better possibility of answering the calls. Customers having less than two accounts are less likely to answer.
+
+
+
+
+Barplot of the counts or proportions of customers who answered, comparing those with and without mobile phones.
+
+```{r}
+advise_invest_cl %>% 
+  mutate(mobile=factor(mobile), 
+         mobile=ifelse(mobile==0,"No","Yes"),
+        answered=ifelse(answered==0,"No","Yes")) %>%                    count(answered,mobile) %>%
+          ggplot(aes(x=mobile,y=n,fill=answered)) +              geom_col(position="dodge") + labs(title="Proportion of customers who Answered(Yes or No) for each level of Mobile")
+
+
+```
+
+
+
+Clearly people with mobile phones answer these calls more frequently. This might be  due to the fact that a mobile phone is easier to answer if the owner is carrying the phone.  It would be advantageous for AdviseInvest  to get cell phone numbers for all callbacks.
+
+
+
+Now we have a rough idea on how the relationship of certain target and prospective predictor variables are
+
+Formatting the dataset properly.
+According to the data dictionary and EDA the predictor variables are job, rent, checking account(chk_acct), savings account(sav_acct), own_car, new_car
+
+
+```{r}
+advise_invest <- read_csv("adviseinvest.csv")  %>%            # Download data
+  select(-product) %>%                                        # Remove the product column
+  na.omit %>%                                                 # Remove NAs
+  filter(income > 0,                                          # Filter out mistaken data
+         num_accts < 5) %>% 
+  mutate(answered = factor(ifelse(answered==0, "no","yes"),   # Turn answered into yes/no factor
+                           levels  = c("no", "yes")),
+         female = factor(female),                             # Make categorical variables into factors
+         job = factor(job),
+         rent = factor(rent),
+         own_res = factor(own_res),
+         new_car = factor(new_car),
+         mobile = factor(mobile),
+         chk_acct = factor(chk_acct),
+         sav_acct = factor(sav_acct)) 
+
+
+```
+
+
+Fit a tree model to the outcome using just one variable, income.
+
+
+```{r}
+income_model <- rpart(formula = answered ~ income, data=advise_invest)
+
+income_model
+
+predict(income_model,type="class") %>% head
+
+(predict(income_model,type="class")==advise_invest$answered) %>% mean 
+
+```
+
+
+
+Calculating Entropy and information gain
+
+
+```{r}
+
+income_model
+parent_entropy <- -.45*log2(.45) - .55*log2(.55)
+
+child1_entropy <- -.63*log2(.63) - .37*log2(.37)
+
+child2_entropy <- -.39*log2(.39) - .61*log2(.61)
+
+p_c1 <- 8063/29499
+
+p_c2 <- 21436/29499
+
+info_gain <- parent_entropy - (p_c1*child1_entropy + p_c2*child2_entropy)
+
+info_gain
+
+```
+
+
+Fit a new tree model of answered using all the predictors
+
+
+```{r}
+tree_model <- rpart(formula=answered ~. , data=advise_invest)
+
+rpart.plot(x=tree_model,tweak=1.7,roundint=T)
+
+```
+
+
+Accuracy of the model
+
+
+```{r}
+(predict(tree_model,type="class")==advise_invest$answered) %>% mean
+
+```
+
+Confusion Matrix
+
+
+```{r}
+table(predicted=predict(tree_model,type="class"), observed=advise_invest$answered)
+```
+
+
+Profit using the confusion matrix.
+
+
+```{r}
+(cost_benefit <-  matrix(c(75, 0, -25, 0), ncol = 2,
+                         dimnames = list(c("predicted yes", "no"), 
+                                         c("observed yes","no"))))
+
+13820*75 - 3008*25
+```
+
+
+Profit when all customers are called. We consider this a baseline case for profit since it does not require a model.
+treat the customers who answer as true positives treat the customers who do not answer as false positives.
+
+
+
+```{r}
+advise_invest %>% count(answered)
+
+16124*75 - 13375*25
+
+```
+
+
+Profit (revenue - costs) with the classification tree model from above using a class decision threshold of .3?  (.3 is the threshold that produces maximum profit.)
+
+Using the cost-benefit matrix provided above, but create a new confusion matrix using `predict()` with the `type = "prob"` argument. Converting the resulting probabilities into class labels using the threshold of .3.  In other words, if the model-predicted probability of answering is greater than or equal to .3, then assign a label of "yes." 
+
+
+
+```{r}
+table(predicted=ifelse(predict(tree_model,type="prob")[,2]>=0.3,"yes","no"),observed=advise_invest$answered)
+
+14268*75 - 3776*25
+```
+
+
+The primary problem is to keep the sales representatives busy, that is they must be occupied with customers in the follow-up call. This is important as a call that is answered results in financial plan getting sold resulting in profit. It is important to determine which customers have the higher probability of answering the call.
+
+Constructed a model that predicts customers who will answer the call. Compared the model's output with the historical data using a confusion matrix. In simple words it is a table to compare the predicted output and the observed data.figured out that the model is 82% accurate. It means out of 100 predictions by the model 82 were right, which is a pretty good number. As per the model, if the company calls the customers who are predicted to answer then the profit is 961300 which is much higher than 874925, which would be the profit if  all the customers are called. Therefore it makes sense to call the customers who are predicted to answer
+
+
+The  data set "prospective" contains observations for prospective customers. There is no target variable in this dataset because these customers have not yet been called. 
+
+Cleaning the dataset
+
+
+```{r}
+prospective <- read_csv("customer_data.csv") %>% 
+  mutate(female = factor(female),
+         job = factor(job),
+         rent = factor(rent),
+         own_res = factor(own_res),
+         new_car = factor(new_car),
+         mobile = factor(mobile),
+         chk_acct = factor(chk_acct),
+         sav_acct = factor(sav_acct))
+
+
+```
+
+
+
+Using the supervised model to predict a probability of answering for each prospective customer. 
+
+2. Assign a predicted class label of "yes" to every customer whose model-estimated probability of answering is .3 or greater. (This is the optimal class decision threshold.) 
+
+3. Filter the dataset to contain only prospective customers with a predicted class label of "yes." This is the contact list. 
+
+
+Using the supervised model to predicted a probability of answering for each prospective customer
+
+
+```{r}
+
+lst <- prospective %>% select(customer_id) %>% mutate(prob=predict(tree_model,newdata=prospective,type="class")) 
+head(lst)
+```
+
+
+Assigning a predicted class label of "yes" to every customer whose model-estimated probability of answering is .3 or greater. (This is the optimal class decision threshold.) 
+and 
+Filtering the dataset to contain only prospective customers with a predicted class label of "yes." Or those customers predicted probability of answering 
+is .3 or greater.
+
+
+```{r}
+ans_prob <- predict(tree_model,newdata=prospective, type="prob")[,2]>=0.3
+
+contact_lst <- lst %>% filter(ans_prob>=0.3)
+
+contact_lst
+
+count(contact_lst)
+
+```
+
+
+
+Applied the model on new data set of prospective customers and put a constraint in the model that only those customers will answer who have a probability of answering than 30%. 624 customers who will answer the call . Therefore the company must target these set of customers and put them on priority as they will answer the call which will ultimately result in the sale getting completed and hence will result in profit.
